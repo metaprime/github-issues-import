@@ -190,12 +190,13 @@ def format_pull_request(template_data):
 def format_comment(template_data):
 	default_template = os.path.join(__location__, 'templates', 'comment.md')
 	template = config.get('format', 'comment_template', fallback=default_template)
-	return format_from_template(template, template_data)
+	text = format_from_template(template, template_data)
+	text = update_issue_references(text)
+	return text
 
 def send_request(which, url, post_data=None):
 	if g['is_dry_run'] and (post_data is not None):
-		print("Cannot call send_request with post_data in a dry run")
-		sys.exit(1)
+		raise Exception("Cannot call send_request with post_data in a dry run")
 
 	if post_data is not None:
 		post_data = json.dumps(post_data).encode("utf-8")
@@ -295,10 +296,6 @@ def import_label(source):
 	return result_label
 
 def import_comments(comments, issue_number):
-	if g['is_dry_run']:
-		print("Cannot call import_comments in a dry run")
-		sys.exit(1)
-
 	result_comments = []
 	for comment in comments:
 
@@ -312,15 +309,19 @@ def import_comments(comments, issue_number):
 
 		comment['body'] = format_comment(template_data)
 
-		result_comment = send_request('target', "issues/%s/comments" % issue_number, comment)
-		result_comments.append(result_comment)
+		if g['is_dry_run']:
+			result_comments.append(comment['body'])
+		else:
+			result_comment = send_request('target', "issues/%s/comments" % issue_number, comment)
+			result_comments.append(result_comment)
 
 	return result_comments
 
 def update_issue_references(text):
 	substitution = r'\1({0}\2)'.format(config.get('source', 'repository'))
 	text = re.compile(r'(\s|^)(#\d+)').sub(substitution, text)
-	print(text)
+	if g['is_dry_run']:
+		print(text)
 	return text
 
 # Will only import milestones and issues that are in use by the imported issues, and do not exist in the target repository
@@ -412,7 +413,7 @@ def import_issues(issues):
 
 	for milestone in new_milestones:
 		if args.test != None:
-			print("test: would import milestone '{0}'".format(milestone['title']))
+			print("dry-run: would import milestone '{0}'".format(milestone['title']))
 		else:
 			result_milestone = import_milestone(milestone)
 			milestone['number'] = result_milestone['number']
@@ -435,14 +436,22 @@ def import_issues(issues):
 			issue['labels'] = issue_labels
 			del issue['label_objects']
 
-		result_issue = send_request('target', "issues", issue)
-		print("Successfully created issue '%s'" % result_issue['title'])
+		if g['is_dry_run']:
+			print("dry-run: would create issue '%s'" % issue['title'])
 
-		if 'comments' in issue:
-			result_comments = import_comments(issue['comments'], result_issue['number'])
-			print(" > Successfully added", len(result_comments), "comments.")
+			if 'comments' in issue:
+				result_comments = import_comments(issue['comments'], 0)
+				print("dry-run: would add", len(result_comments), "comments.")
 
-		result_issues.append(result_issue)
+		else:
+			result_issue = send_request('target', "issues", issue)
+			print("Successfully created issue '%s'" % result_issue['title'])
+
+			if 'comments' in issue:
+				result_comments = import_comments(issue['comments'], result_issue['number'])
+				print(" > Successfully added", len(result_comments), "comments.")
+
+			result_issues.append(result_issue)
 
 	state.current = state.IMPORT_COMPLETE
 
